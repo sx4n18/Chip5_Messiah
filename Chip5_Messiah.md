@@ -82,3 +82,86 @@ So from this expression, it seems that we need only 2 xor gate for this conversi
 
 I should add this into my compression module...
 
+
+## 20 Aug 2026
+
+I have drafted the very first version of my compression module, now it is under testing.
+
+So far it seems the basic functions have been tested to be okay.
+
+Will keep on testing for the edge case.
+
+Since I found a case when internal incrementing reached 0x7fff, it might cause problem.
+
+First of all, we have the register update as follow:
+
+```
+
+clock cycle  		:  		0        1        0        1        0        1        0
+data valid 			:       1        0        1        0        1        0        1
+silence cnt         :      7ffd     7ffe     7ffe     7fff    7fff      0001     0002
+
+enc ready           :       0        0        0        0        1        0        0
+enc data            :       0        0        0        0      8000       0        0
+```
+
+The clock is double the rate of the data, so we evaluate the equality at cycle 0, and update silence counter at cycle 1.
+
+Therefore when it is repeating and reaches 7fff, we will have one cycle of alarm to output 0x8000 and return to wait state like above
+
+And we noticed that there might be new data coming while we are in the state of alarm.
+
+What if at this very edge case, the pattern broke while we are at alarm state?
+
+
+```
+
+clock cycle  		:  		0        1        0        1        0        1        0
+data valid 			:       1        0        1        0        1        0        1
+pix data            :       A        A        A        A        B        B        C
+																Λ
+																|
+
+
+silence cnt         :      7ffd     7ffe     7ffe     7fff    7fff      0000     0000
+
+enc ready           :       0        0        0        0        1        1        0
+enc data            :       0        0        0        0      8000      000B      0
+
+```
+
+My solution is to still evaluate while in alarm state, if that pattern breaks right at alarm state, we jump straight back in push state. In the meantime, we will reset the silence counter.
+
+So for the decoder end, it may see:   000A, 8000, 000B.
+
+This should stand for the case that value A has repeated 32767 times after the original A and then followed by B.
+
+
+
+If this pattern breaks right after the alarm cycle, we shall resume the normal wait state and then jump back to push, but in this case because the silence counter managed to wrap, we will reset it back to 1 instead of 0.
+
+
+```
+
+clock cycle  		:  		0        1        0        1        0        1        0        1
+data valid 			:       1        0        1        0        1        0        1        0
+pix data            :       A        A        A        A        B        B        C        C
+
+																Λ
+																|
+
+
+silence cnt         :      7ffe     7fff     7fff     0001    0001      0001     0000     0000
+
+enc ready           :       0        0        1        0        0        1        1        1
+enc data            :       0        0       8000      0        0       8001     000B     000C
+
+```
+
+So this can be easily distinguished with a different encoding:  000A, 8000, 8001, 000B, 000C
+
+This would stand for the case that A has repeated 32767 + 1 times after the original A and then followed by B and C.
+
+
+But now I have a different case where when the module is in WAIT state and experiences disabling, it will jump straight back to push without exporting the time stamp.
+
