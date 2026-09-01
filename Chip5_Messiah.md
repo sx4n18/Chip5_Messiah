@@ -83,6 +83,23 @@ So from this expression, it seems that we need only 2 xor gate for this conversi
 I should add this into my compression module...
 
 
+
+## 17 Aug 2026
+
+I have now thought about it, and then realised that I could get the probably get the resistor combo from the front end. 
+
+Will now start coding for the compression module.
+
+
+## 18 Aug 2026
+
+I raised my thought about this 1-bit mode to Jonny, and I think he is happy to have a fixed representation of 1 with binary values of 101, 110, 111 and 0 with 000, 001, 010, 011, 100. So long as the end user knows where exactly the resistor combo is.
+
+And it has made my work a lot more easier now the hardware will be much simpler.
+
+
+
+
 ## 20 Aug 2026
 
 I have drafted the very first version of my compression module, now it is under testing.
@@ -310,5 +327,79 @@ Row_encode_5P                287   7743.254  4382.456    12125.710
 Which showed a total area increase from 9393.768 to 12125.710, which roughly matches my previous estimation of about 30% area increase.
 
 Will have to run a post-syn simulation now to verify the functionality.
+
+
+
+## 26 Aug 2026
+
+After repeating the simulation for this synthesised module, all the behaviour has been verified to be correct.
+
+And then we had the meeting yesterday, which mainly was raised by research IT.
+
+The biggest question here is:
+
+What is the proper sequence for the following cases: 
+
++ Change sampling rate (tweaking N and M of course, but the whole system will be down for a moment)
++ Change the mask for a certain pixel
++ Switch between 1-bit and 3-bit mode
++ Update the sensor's threshold resistor combo
++ Overflow handling
+
+For the quick think, these tasks can be roughly classed in 2 categories:
+
++ Global changes
++ Local changes
++ Chip level changes
+
+So for tasks like: change data acquisition rate, switch between 1-bit/3-bit mode and threshold resistor combo update can be classed as global change, while changing the mask of a certain pixel and overflow handling can be treated as local changes.
+
+
+## 27 Aug 2026
+
+To make the global changes, I will have to do the following sequences:
+
+For example, if we are switching 3-bit to 1-bit
+
++ Disable all the channels and log the timestamp
++ Wait until all the async FIFOs are empty, this can be finished internally inside each group
++ Start applying new settings, and log the timestamp again
++ Enable the compression and export special packet
+
+P.S. these 2 timestamps will be available for SPI interface to read back until there is a new event.
+
+For now we have the packets format as in:
+
+```
+[SOF][FRM_CNT][CHS][CID][PAYLOAD]....[CHS][CID][PAYLOAD][EOF]
+			||
+			\/
+[FACE][xxxx][C0DE][0001][XXXX]....[C0DE][0003][XXXX][DEAD]
+```
+
+We shall now expand the packet format with the addition of packet type and CRC:
+
+```
+Normal science packet:
+
+[SOF][PKT_TYP][FRM_CNT][CHS][CID][PAYLOAD]....[CHS][CID][PAYLOAD][CRC-16][EOF]
+
+Event packet:
+
+[SOF][PKT_TYP][FRM_CNT][TIME0<15:0>][TIME0<31:16>][3'b000,TIME0<44:32>][TIME1<15:0>][TIME1<31:16>][3'b000,TIME1<44:32>][EOF]
+
+Overflow packet:
+
+[SOF][PKT_TYP][FRM_CNT][TIME0<15:0>][TIME0<31:16>][3'b000,TIME0<44:32>][OVERFLOW-FIFO-ID][TIME1<15:0>][TIME1<31:16>][3'b000,TIME1<44:32>][EOF]
+```
+
+
+## 28 Aug 2026
+
+
+
+
+
+
 
 
