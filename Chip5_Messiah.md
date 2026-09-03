@@ -394,12 +394,98 @@ Overflow packet:
 ```
 
 
-## 28 Aug 2026
+## 1 Sep 2026
+
+I am now trying to establish the FSM for our local event handler, which should be responsible for taking care of applying configurations safely.
+
+It should also handle the overflow situation with the following sequences:
+
+```
+FIFO overflow detected --> capture mission time T0 --> disable the compression --> wait until all fifos are empty --> reset fifo read and write --> enable compression again --> capture mission time T1 --> export event
+
+```
+
+However, this should be handled entirely internally.
+
+And also there should be cases when the host wants to change the local mask, or want to change the compression operating mode.
+
+These should be triggered by the actual command from host.
+
+There should also be cases where we need to intentionally disable the block, for example when we adjust the system level settings like sampling rate.
+
+So there should be few different levels of events:
+
++ Internal event
++ Local reconfig
++ Global reconfig
++ Safe shutdown
 
 
 
+## 2 Sep 2026
 
 
+I have now finally had a version of the event handler state machine illustration for now. Will start my RTL development.
 
+```txt
+                ┌───────────┐
+                │   RESET   │
+                └─────┬─────┘
+                      │
+       rst_n=1 && effective_enable
+                      │
+                      ▼
+                ┌───────────┐
+                │    IDLE   │
+                └─────┬─────┘
+                      │
+        ┌─────────────┼───────────────────┐
+        │             │                   │
+    overflow      cmd_apply         disable request
+        │             │                   │
+        ▼             ▼                   ▼
+   CAPTURE_T0    CAPTURE_T0        DISABLE_BLOCK
+        │             │                   │
+        └──────┬──────┘                   ▼
+               │                   WAIT_FIFO_EMPTY
+               ▼                           │
+        DISABLE_BLOCK                      ▼
+               │                       RESET_AFIFO
+               ▼                           │
+        WAIT_FIFO_EMPTY                     ▼
+               │                         RESET
+               ▼
+          RESET_AFIFO
+               │
+       ┌───────┴───────────────┐
+       │                       │
+   overflow                local/global
+       │                    configuration
+       │                       │
+       ▼                       ▼
+ ENABLE_BLOCK          APPLY_CONFIGURATION
+       │                       │
+       └───────────┬───────────┘
+                   ▼
+              ENABLE_BLOCK
+                   │
+                   ▼
+              CAPTURE_T1
+                   │
+                   ▼
+              CREATE_EVENT
+                   │
+                   ▼
+            WAIT_EVENT_ACK
+                   │
+                   ▼
+                  IDLE
+```
+
+Now I have finished testing for this module, and now I will proceed to readapt the design for CARR_arb to have some configurability in it.
+
+We will need to configure the maximum number of read from each fifo. 
+
+It used to be a parameter, now we shall have it be configurable with 9-bit of parameters.
 
 
