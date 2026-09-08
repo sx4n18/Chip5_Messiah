@@ -489,3 +489,155 @@ We will need to configure the maximum number of read from each fifo.
 It used to be a parameter, now we shall have it be configurable with 9-bit of parameters.
 
 
+## 7 Sep 2026
+
+I have now updated the design of CARR arbiter to make it receive the global configuration parameters.
+
+I will now need to start the update for the packet builder to make it now able to receive event and translate that properly.
+
+And I was testing my old design of the async fifo, had some issue with simulation, so I had a close look.
+
+Because it has to be built on top of a real IP, key signal change needs to shift from the clock edge.
+
+However, this key register is still getting an update at the clock edge:
+
+```verilog
+// write clock domain
+always @(posedge CLK40M or negedge WRSTN) 
+begin
+  if(~WRSTN) begin
+    write_prt_bin <= 0;
+  end else begin
+    // if push is asserted, increment the writing pointer
+    if (PUSH && !FULL_40M) begin
+      // use this line when running behavioural level simulation for afifo
+      // real DPRAM IP + behavioural level external circuitry
+       write_prt_bin <= #1 write_prt_bin +1;
+      // 
+      // use the following line when running synthesis.
+      //write_prt_bin <= write_prt_bin +1;
+    end
+    
+  end
+end
+
+```
+
+This has caused the simulation to fail to write any data in during simulation, which has now been identified.
+
+Now I am heading straight to make changes to packet builder.
+
+First thing first, I will have to read through this code and organise the fsm out of it.
+
+
+I have now just updated the packet builder state machine with the following addition:
+
+ + Renamed the module to packet_builder instead of Packet_builder  
+ + Added ports and states to interact with local event handler to handle special events
+ + Added extra state to export META info (pkt_type)
+ 
+So now our packet builder can generate event packets and also insert extra pkt type information into the packets.
+
+
+But while testing my packet builder, I realised the hidden issue with the local event handler and this packet builder.
+
+**When the block is enabled, newly compressed data may arrive before packet builder handles the event**
+
+```txt
+      40 Mhz        75 Mhz 
+------------------------------------- 
+      |          afifos_empty  
+      | <-----------------| 
+  reset_AFIFO ----------->| 
+  apply_new_config        | 
+  re-enable blk           | // EN <= 1; 
+  Cap_t1                  | // event_t1 <= ???, 
+  create_event            | // event_valid <= 1, enc_valid = 1, enc_data = 16'hXXXX 
+  wait_eve_ack            | // event_valid = 1 --> sync to 75 Mhz,  afifo_not_empty --> sync to 75 Mhz
+```
+
+So for example at time T0, we reset the afifo:
+
+```txt
+
+T0 :
+  reset afifo
+
+T1:
+  apply new config
+
+T2: 
+  re-enable the block              EN = 0 --> 1
+
+T3:
+  capture t1                       EN = 1, if pix_valid = 1.
+
+T4:
+  create event                     event_valid <= 1, enc_valid = 1, enc_data =  16'hXXXX
+
+T5:
+  wait_eve_ack                     event_valid = 1, afifo_not_empty = 1
+
+```
+
+This is not safe for the downstream logic pb to handle event before new data comes in.
+
+So I decided to put `event_valid <= 1` in state re-enable blk and removed state create_event.
+
+so that EN = 0 --> 1 and event_valid = 0 --> 1 will happen the same time, this for sure will be fine.
+
+Now I will just need to build up the encapsulated block to verify this.
+
+ 
+## 8 Sep 2026
+
+Since I have now finished the design, I will now start a comprehensive simulation with local event handler, compressors, AFIFO (ideal behavioural model), arbiter and the packet builder.
+
+But I shall also start the draft for CRC-16 module, which may be included eventually.
+
+I have now run the testbench to give our module a test on how it would react under different situations:
+
+The first test is the mask change, where the block mask was changed from all 1 to 00000_11111_00000_11111_00000_11111_00000_11111.
+
+![local mask change for pixels in this block](./img/local_mask_change_from_all_1_to_alternating_1_and_0.png)
+
+And it can be seen that the block was flagged busy and disabled right after.
+
+Then the block was set to wait for a long time until all fifos are empty before it can be safely re-enabled.
+
+![a very long wait before fifos are all empty, when it is finally safe](./img/block_was_disabled_and_waited_for_a_long_time_before_getting_resumed_due_to_fifo_depletion.png)
+
+Eventually, the event packet was generated with the start timing and end timing, which is 0085 and 01BC, which is correctly saved and sampled.
+
+![Generated event packet that contains time 0085 and 01BC and type 0001](./img/generated_event_packet_that_contains_time_information_and_type_of_event.png)
+
+---
+
+The second test was a global reconfiguration, which happened very quickly because the fifos are empty, so the final event packets are very short.
+
+![the global reconfig finished quickly because the fifos are basically empty](./img/global_reconfiguration_which_takes_only_few_cycles_to_finish_and_generated_packet.png)
+
+---
+
+The third test was to set the frame fifo to be almost full, this resulted the packet builder to pause in state cooldown to wait until the frame fifo is normal again.
+
+---
+
+At last, we pushed the block to produce enough data to overflow the fifo, which should trigger the overflow handling.
+
+It can be seen from the simulation that the first fifo to be full is fifo 4.
+
+![The fifo 4 is getting full, which triggered the overflow contingency](./img/overflow_handling_when_fifo4_is_getting_full_this_has_caused_the_event_handler_to_start_the_mechanism.png)
+
+This has been eventually reflected by the event packet.
+
+![We can see that the event packet correctly recorded the event type and overflow id](./img/Overflow_event_packet_generated_from_the_event_handler_getting_pushed_out_by_the_packet_builder.png)
+
+---
+
+I should try to make the whole block to run on a real image next and see how well it can do.
+
+But it seems that the new 1-bit mode really could alleviate the fifo stress. even in cases like this, it will not over flow.
+
+The simulation is promising so far.
+
