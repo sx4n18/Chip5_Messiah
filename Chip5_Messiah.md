@@ -641,3 +641,65 @@ But it seems that the new 1-bit mode really could alleviate the fifo stress. eve
 
 The simulation is promising so far.
 
+
+## 9 Sep 2026
+
+I actually need to think what features I need to add to this very simple mission counter.
+
+Maybe enable, soft reset?
+
+They should be globally managed across the chip despite they are located in each block.
+
+
+## 15 Sep 2026
+
+This mission counter aside, I have generated a real image data set to be run by the data block.
+
+We have generated some promising results with it.
+
+For example, I put the block to a stress test with our "messy" image, rescombo of 011 and arm separation of 0.2.
+
+I intended to push 1000 lines of pixels, and we have got the data overflow.
+
+![Overflow on the real image data](./img/Over_flow_triggered_by_real_image_data_causing_the_EH_to_disable_the_block.png)
+
+And it spent quite a while to drain the fifo before resuming the block.
+
+![The actual wait is about 4 um to drain all async fifos](./img/The_long_wait_to_drain_all_fifos_before_resuming_the_compression.png)
+
+And we received the event packet when the overflow handling was finished.
+
+![The actual overflow event packet generated](./img/Actual_event_packet_on_overflow_simulated_over_real_image.png)
+
+
+Since we have had the new packet design as in the following fashion:
+
+```text
+Normal science packet:
+
+[SOF][PKT_TYP][FRM_CNT][CHS][CID][PAYLOAD]....[CHS][CID][PAYLOAD][CRC-16][EOF]
+
+Event packet:
+
+[SOF][PKT_TYP][TIME0<15:0>][TIME0<31:16>][3'b000,TIME0<44:32>][TIME1<15:0>][TIME1<31:16>][3'b000,TIME1<44:32>][EOF]
+
+Overflow packet:
+
+[SOF][PKT_TYP][TIME0<15:0>][TIME0<31:16>][3'b000,TIME0<44:32>][OVERFLOW-FIFO-ID][TIME1<15:0>][TIME1<31:16>][3'b000,TIME1<44:32>][EOF]
+```
+
+We do not support CRC-16 yet.
+
+But the update to it so far, is that we do not include frame count to our science type packet.
+
+For science type, the packet type is "SC" ==> 0x5343.
+
+As for event type, the packet type is "EV" ==> 0x4556.
+
+And so far, the event type are classed as:
+
++ overflow.         0x0000
++ local config      0x0001
++ global config     0x0002
+
+
