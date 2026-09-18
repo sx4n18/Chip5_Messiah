@@ -703,3 +703,124 @@ And so far, the event type are classed as:
 + global config     0x0002
 
 
+## 18 Sep 2026
+
+I realised some problem with my design in terms of the house keeping information.
+
+Despite the existence of the mission counter, we do not know the exact time when the acquisition starts. 
+
+The flow would be like:
+
+```
+acquisition starts --> global enabled --> block enabled --> compression starts
+```
+
+But we do not actually take any snapshot of the mission counter when all the blocks were enabled. And also because there is no special chip bring-up event packet. We would not have any idea when exactly the block was first enabled.
+
+This would bring potential problem for the software to identify where we are.
+
+---
+
+**How would you know where you are when there is no starting line?**
+
+---
+
+So I decided to make some changes to the design, since what we care about this starting time is the moment when the block started acquisition. This time should be taken from the local block, and exposed to SPI to be viewed.
+
+But to call for the start of the acquisition should be the job of our system manager, which technically should live in the clock domain of refclk.
+
+The start of the acquisition process should be:
+
+```
+              System manager
+                    │
+             acquisition_start
+                    │
+                    ▼
+              common 40 MHz
+                start pulse
+                    │
+       ┌────────────┼────────────┐
+       ▼            ▼            ▼
+     LEH0          LEH1        LEH23
+       │            │            │
+    T=123456     T=123456     T=123456
+```
+
+So our block shouldn't simply just start when there is effective enable asserted and stop when there is not.
+
+And this acquisition start time should only be sampled once when the host started this session.
+
+But now check on the local event handler FSM, I realised this may not be achievable without ambiguity.
+
+In the previous FSM diagram, we see that the best place to sample this ACQ_START_T would be from state `RESET` to `IDLE`. 
+
+But this transition is very generic, it could mean both:
+
++ System after reset, chip bring-up from reset to acquisition
++ Block intentionally disabled, now we are turning it back on
+
+We only want to log down the timing at the first case instead of the second.
+
+And as for the second case, we have additional needs that also require attention.
+
+---
+
+**Block ACQ discontinuity length unknown**
+
+---
+
+We did implement the design to be able to intentionally disable the block or re-enable the block.
+
+This can happen while all the rest of the blocks are still running and active in this session.
+
+But this activity will not give us an exact timing of when the block was disabled/enabled.
+
+We may be able to analyse the received data packets on the disabled block and conclude the ending time because the compression will always end the compression with the data words. So if we have not miscalculated the cycles at the receiving end, we should be able to track where we are with the last data word.
+
+But we would not know when the block was enabled again for the similar reason as last question.
+
+---
+
+**Event packets fill the void when caused by events, not by others**
+
+---
+
+I am now very glad we had introduced the event packets so for a continuously running block, when event happens, we have the event packets to explain the "missing" data while the event handler deals with the event.
+
+But we do not have this for intentional disable/enable block and beginning of everything.
+
+---
+
+**What do we need?**
+
+---
+
+We need extra 3 timestamps:
+
++ Start of the acquisition timestamp: ACQ_START_T
++ Block intentionally disabled timestamp: BLK_DISABLE_T
++ Block intentionally enabled timestamp: BLK_ENABLE_T
+
+---
+
+**How do we fit them into the FSM?**
+
+---
+
+Now here is the problem, we now need another input port: acq_start_cmd, which should be a simple pulse
+
+And we needed extra 3 output registers that are exposed to SPI: ACQ_START_T, BLK_DISABLE_T, BLK_ENABLE_T
+
+We need to modify the FSM state now.
+
+In previous designs, `RESET` is the state when system after the reset, and also the resting state when block was intentionally disabled.
+
+This seems ambiguous now if we simply use this state for both.
+
+Therefore, I'd like to introduce a new state called `DOWN` simply as a resting state when the block was intentionally disabled.
+
+And the system will only be at `RESET` when the system just go through reset and waiting to be brought up.
+
+
+I have now updated the FSM and did some simple test on it.
