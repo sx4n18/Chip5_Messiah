@@ -824,3 +824,140 @@ And the system will only be at `RESET` when the system just go through reset and
 
 
 I have now updated the FSM and did some simple test on it.
+
+
+## 21 Sep 2026
+
+I was staying late on Friday 18 Sep to think about the details about the readjustment of sampling rate.
+
+This has led to another issue: since our consuming side's frequency will be fixed at 75 Mhz, if we changed the sampling rate to lower frequencies. It will mean that the producers' side clock will be lower.
+
+Will it eventually cause the event packets racing at the packet builder's side?
+
+**TL; DR; YES, it will at a certain point**
+
+---
+
+The illustration below shows the local event handler's timing when there is an event.
+
+![]()
+
+
+**Question 1 : will there be a race between the event and the compressor's afifo?**
+
+No. Despite that event valid and block enable was asserted at the same cycle, those 2 signals have different travelling routes:
+
+
+```
+
+                 |BLK_EN --> compressor enabled --> first compressed data --> afifo not empty 
+    SAMPLING X2  |                                                                  |
+     FREQUENCY   |EVE_VALID                                                         |
+                 |   |                                                              |
+                 |   | sync                                                         |
+                 |   |                                                              |
+     75 Mhz      |   |====> PB received                                             |====> PB starts draining
+                 |
+                 |      
+```
+
+
+from the diagram, we could see that even in the worst case (the moment block was enabled, our pixel was valid), we would still be expecting the new compressed data in 2 cycles and then synced over to 75 Mhz so that our PB can see that the fifo is not empty.
+
+But the event valid signal only needs to be synced to PB to be recognised.
+
+Additionally, in PB's logic, it will prioritise event over afifo not empty, so there will not be race between event packet and new data in the fifo.
+
+---
+
+**Question 2 : is there a limit on how slow the sampling can go under current design scheme?**
+
+Yes, there is.
+
+In the timing diagram above, we can see that the new T1 will only be updated after a full cycle after the event_valid was asserted.
+
+The timing window from T0 to T1 is $\frac{1}{2f}$, where $f$ is our sampling rate.
+
+While checking the PB's state machine, we see that it needs the signal EVE_T1 to be stable after **5 cycles**, plus the **2 syncing cycles** for signal EVE_VALID. EVE_T1 should be ready for sampling in 7 cycles in PB's POV.
+
+To make the event packet correctly interpreted, we need to make the following condition satisfied:
+
+$$\frac{7}{75 \times 10^6 } > \frac{1}{2f}$$
+
+
+this will give us $f > 5.357 Mhz$, which means the aircraft cannot fly slower than $107.35 ms^{-1}$
+
+This will put a big limitation on the instruments.
+
+
+**Question 3: how do we fix this?**
+
+I intent to add extra signals in this event bus. Only one will be enough.
+
+This new signal will be $EVE_T1_VALID$, and it needs to be synced over to PB to be recognised so it knows that out EVE_T1 is ready to consume.
+
+And this is the last bits to be consumed in our event packet, everything else will be ready when event valid is raised. Therefore, adding only this signal will be enough.
+
+
+---
+
+Now I have all the components modified, I am ready to run some comprehensive test.
+
+This test is modified based on the original tb_data_block, I have added some extra ports, and also fixed the event counting to make the testbench only count rising edge of the event valid.
+
+
+Now the block will have to be activated by a pulse of acq_start_cmd so it will not start automatically.
+
+
+I will now change the sampling rate clock to 5 Mhz, which means, clk40m now means 10 Mhz.
+
+As expected, the packet builder will now wait for event_time1 to settle before sampling it and export the right time out.
+
+![simulation when producer works at 10 mhz and consumer works at 75Mhz, we shall expect the PB to wait for TIME1](./img/Packet_builder_will_enter_wait_state_to_wait_event_time_t1_to_settle_under_10mhz.png)
+
+But it seems that the right event_time1 was not sampled, the export packet still shows all 0.
+
+
+
+okay, I just found another bug while running simulations.
+
+From the look of it, when the data block needs to be globally reconfigured, the seemingly empty FIFO all of sudden received 1 word of data.
+
+Which seemed odd, so I had a look into it, it appears to be the case when compressors are in wait state and then got disabled,
+
+So the compression module needs to flush the last 2 words, timestamp and repeated word.
+
+But it still does not match the fact that we only had 1 word read out from packet builder. 
+
+So I had a look at one of the cases for the compression modules and afifos.
+
+The reason why we had this is because of the local event handler, even though the compression module was trying to write 2 words into AFIFO, it was reset during last 2 words flush.
+
+![The event handler disabled the module, but the flush state export was not captured by the event handler](./img/Compression_module_entering_flush_state_to_push_timestamp_into_AFIFO_when_disabled_but_event_handler_did_not_catch_it_and_proceed_with_reset.png)
+
+This is because when modules disabled, the compression module needs the following flow to finish last 2 words push:
+
+```
+#### Compression ####
+
+module      EN = 1 --> EN = 0 -->  EN = 0 
+state       WAIT   --> WAIT   -->  FLUSH      --> PUSH      -->  IDLE
+enc_data    ....   --> ....   -->  timestamp  --> DATA      -->   ..
+enc_ready    0     -->  0     -->   1         -->   1       -->   ..
+EMPTY?       1     -->  1     -->   1         -->   0
+                                    Λ
+#### LOCAL EVENT HANDLER ####       |
+
+state      DSB_BLK --> WAIT_MT --> RESETAFIFO --> APL_CFG   --> EN_BLK
+```
+
+Because there is a 2 clock cycles delay, and also this "FIFOs EMPTY" signals is coming from 75 mhz clock domain. I believe the local event handler should wait longer at WAIT_FIFO_EMPTY state to make sure every last drop was squeezed into the AFIFO before resetting it.
+
+I will extend it for another 2 clock cycles and see if this helps.
+
+So actually, we need 5 extra cycles at least. This is because we need at least **3 cycles** for the flushing, and also another **2 cycles** for the signal all_fifo_empty to be synced back to 40 Mhz. 
+
+And now it seems that all the last few bits of information can be properly drained.
+
+
+
