@@ -832,6 +832,8 @@ I was staying late on Friday 18 Sep to think about the details about the readjus
 
 This has led to another issue: since our consuming side's frequency will be fixed at 75 Mhz, if we changed the sampling rate to lower frequencies. It will mean that the producers' side clock will be lower.
 
+![local event handler and our consuming side of the circuitry packet builder live in two different clock domain](./img/consuming_side_fixed_at75Mhz_when_event_packets_generation_happens_at_variable_frequency.png)
+
 Will it eventually cause the event packets racing at the packet builder's side?
 
 **TL; DR; YES, it will at a certain point**
@@ -840,7 +842,7 @@ Will it eventually cause the event packets racing at the packet builder's side?
 
 The illustration below shows the local event handler's timing when there is an event.
 
-![]()
+![timing diagram of the local event handler generating events with relations to all the signals](./img/timing_diagram_of_our_event_valid_signal_and_all_the_related_signals.png)
 
 
 **Question 1 : will there be a race between the event and the compressor's afifo?**
