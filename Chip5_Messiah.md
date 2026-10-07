@@ -962,4 +962,27 @@ So actually, we need 5 extra cycles at least. This is because we need at least *
 And now it seems that all the last few bits of information can be properly drained.
 
 
+## 23 Sep 2026
+
+Back to this CDC design flaw, even though I have come up with the solution. It still feels a little unsafe.
+
+Therefore, I will add an extra port for each compressor: compressor_idle.
+
+This will simply be turned on when the block is in IDLE state.
+
+And when the local event handler wait for the AFIFO to be empty, it needs to also check if they the compressors are in idle state.
+
+The process will mainly be like:
+
+```
+Wait for 5 clock cycles --> check if compressor is idle && if fifos are all empty --> proceed to next state
+```
+
+## 24 Sep 2026
+
+I am now organising the registers we may need for a local block and global system, so that we could arrange the space for the needed registers.
+
+This will be found in the excel sheet. 
+
+
 
