@@ -896,7 +896,7 @@ This will put a big limitation on the instruments.
 
 I intent to add extra signals in this event bus. Only one will be enough.
 
-This new signal will be $EVE_T1_VALID$, and it needs to be synced over to PB to be recognised so it knows that out EVE_T1 is ready to consume.
+This new signal will be `EVE_T1_VALID`, and it needs to be synced over to PB to be recognised so it knows that out EVE_T1 is ready to consume.
 
 And this is the last bits to be consumed in our event packet, everything else will be ready when event valid is raised. Therefore, adding only this signal will be enough.
 
