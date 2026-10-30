@@ -1026,3 +1026,136 @@ afifo_reset_n is combinational output, to make it safe, we need to register it s
 
 ---
 
+## 27 Oct 2026
+
+I have now finished some minor linting for the RTL code to make the design more robust. 
+
+Will now push further for the downstream logic design.
+
+Now I am making the Async FIFO a true pre-fetch FIFO with the capability for back-to-back pop.
+
+Because current design does this:
+
+```
+cycle             0        1       2       3       4       5
+pop               0        1       1       1       0       0
+rd_prt_bin        0        0       1       2       3       3
+DOB             D[0]      D[0]    D[0]    D[1]    D[2]    D[3]
+```
+
+It works now because we only pop FIFO every other cycle:
+
+```
+cycle             0        1       2       3       4       5       6
+pop               0        1       0       1       0       1       0
+rd_prt_bin        0        0       1       1       2       2       3
+DOB             D[0]      D[0]    D[0]    D[1]    D[1]    D[2]     D[2]
+                                   ^               ^                ^
+```
+
+We can see that the RAM IP will have to wait for one cycle to register the address and point it to `DOB`
+
+Therefore, the only safe way to read the right data is to wait the next cycle, which is not a true pre-fetch FIFO.
+
+what we want is:
+
+```
+cycle             0        1       2       3       4       5
+pop               0        1       1       1       0       0
+rd_prt_bin        0        1       2       3       3       3
+DOB             D[0]      D[0]    D[1]    D[2]    D[3]    D[3]
+```
+so for the actual read address, we will do the following:
+
+```verilog
+assign [8:0] rd_addr = rd_prt_bin + POP_OK;
+```
+
+## 30 Oct 2026
+
+Now I have finished the synthesis, and I managed to run the data block gate level simulation with timing back annotation.
+
+But it seems that there seems to be a problem during simulation.
+
+It can be seen from the simulation that the data to be pushed into the frame fifo is XXXX.
+
+This is due to that fact that we have unknown input for selected ID from async FIFO.
+
+One step before this is because the empty75m flag was failing on channel 0, which leads to the arbiter's next choice logic to fail when there is unknown empty state from async fifo.
+
+What was causing this is because of the synchronisation between clock domain.
+
+Since we have the flag defined as:
+
+```verilog
+assign EMPTY_75M = (read_prt_gray == write_prt_gray_sync_2);
+```
+
+and both `read_prt_gray` and `write_prt_gray_sync_2` are fully registered in 75 Mhz, so this assignment is safe.
+
+But in the simulation, what happened was `write_prt_gray` updated right near the edge of 75 Mhz, which has caused one bit of it to not be passed properly to `write_prt_gray_sync_1`, which then propagated to the next flop for synchronisation.
+
+So to explain it:
+
+```
+write_prt_gray (at 40 Mhz) updated near the edge of 75 Mhz
+                    |
+                    V
+write_prt_gray_sync_1/2 propagated unknown state X
+                    |
+                    V
+async fifo 0 EMPTY_75M failed when write_prt_gray_sync_2 has unknown state
+                    |
+                    V
+Arbiter failed to make a decision to choose which fifo to pop next
+                    |
+                    V
+next selected channel's ID unknown (SEL_FIFO_IDQ unknown)
+                    |
+                    V
+Packet builder failed to produce the next frame word
+```
+
+Since this is more of a simulation problem rather than a structural problem with the design, we simply just need to turn off the timing checks for those specific synchronising flops.
+
+This can be done with a tfile, in the tfile, we simply list the actual registers in the synthesised netlist.
+
+an example tfile 
+
+```
+// sync_first_stage.tfile
+PATH tb_data_block.dut.\encoder_fifo_blk[0].i_Async_FIFO_256X16 .\write_prt_gray_sync_1_reg[0]  -tcheck
+...
+```
+
+and during simulation, we simply add this file as an additional option like this:
+
+```
+xrun -sv +access+rwc -gui -timescale 1ns/1ps \
+     -tfile exclude.tfile \
+     tb_data_block.sv \
+     ../syn/outputs_from_syn/data_block_syn.v \
+     <fsa0a_c_generic_core cell Verilog model> \
+     <SJ180_256X16X1CM4 Verilog model>
+```
+But to note that we need to add the back slash `\` for certain instances because their naming contains certain characters that are not allowed in normal verilog syntax
+
+as for `encoder_fifo_blk[0]`, since it contains the special character `[]`, it has to be escaped with a leading back slash. And to finish the escaping, we need an intentional white space after the reference naming, that explains the white space after `i_Async_FIFO_256X16`.
+
+After having this tfile included, we managed to have the simulation running properly, and it produces the right behaviour I was looking for.
+
+But because I did not expose some ports to the interface, they have been optimised and not connected.
+
+Therefore, I need to revise my code to clearly expose ports to certain part of the design.
+
+As for data block, it contains:
++ Row encoder
++ Async fifo
++ CARR arbiter
++ Packet builder
++ Local event handler
+
+So we need to expose the ports to interface ADCs, local register bank, global system manager and down stream logic.
+
+But the flow now seems to be working, and I can try to proceed for layout design next.
+
