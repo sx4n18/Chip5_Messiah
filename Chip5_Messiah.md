@@ -986,3 +986,43 @@ This will be found in the excel sheet.
 
 
 
+## 21 Oct 2026
+
+Previously on Messiah....
+
+I have been trying to migrating my work form allman now to Gilmour where tools are much more recent and the machine is snappier.
+
+The whole flow has been verified....
+
+That includes the simulation, synthesis and physical layout design.
+
+---
+
+Now back to my main quest, I have now made some debugging using the LLM to give me some potential bugs I may have overlooked. 
+
+Now I am fixing them.
+
+They are classed in 4 levels:
+
++ Level 1: Functional bugs
++ Level 2: Margins and CDC hygiene
++ Level 3: Features
++ Level 4: cleanup
+
+Now I am starting with Level 1 which may lead to silicon risk
+
+---
+
+**Async FIFO's FULL_REG was reset by RRSTN instead of WRSTN**
+
+This is a very important bug to be fixed, and this has now been fixed in Gilmour.
+
+
+---
+
+**local_event_handler, we need to register afifo_reset_n**
+
+afifo_reset_n is combinational output, to make it safe, we need to register it so modules and fifos will not get accidentally reset.
+
+---
+
