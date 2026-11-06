@@ -1159,3 +1159,116 @@ So we need to expose the ports to interface ADCs, local register bank, global sy
 
 But the flow now seems to be working, and I can try to proceed for layout design next.
 
+## 04 Nov 2026
+
+I have been trying to do some simple layout design with innovus, but the problem is that this design is a little incomplete since I have not included the local register bank module.
+
+And because of this, the internal registers that was supposed to be read back from the register bank was trimmed by synthesis tool genus.
+
+The current layout looks like this:
+
+![current proposed sandwich design for data block](./img/current_proposed_layout_of_the_design_in_innovus.png)
+
+```
+                top edge: ADC outputs in order 0 1 2 3 4 5 6 7
+ ┌───────────────────────────── ≤ 1500 µm ──────────────────────────────┐
+ │  enc0   ┊   enc2   ┊   enc4   ┊   enc6   ┊        band A             │
+ │ ┌─W──┐  ┊ ┌─W──┐   ┊ ┌─W──┐   ┊ ┌─W──┐   ┊                           │
+ │ │ S0 │ 1┊ │ S2 │ 3 ┊ │ S4 │ 5 ┊ │ S6 │ 7 ┊   R0                      │
+ │ └─R──┘  ┊ └─R──┘   ┊ └─R──┘   ┊ └─R──┘   ┊                           │
+ │  read sides · arbiter · packet builder · handler · mission counter   │ band B
+ │ ┌─R──┐  ┊ ┌─R──┐   ┊ ┌─R──┐   ┊ ┌─R──┐   ┊                           │
+ │ │ S1 │  ┊ │ S3 │   ┊ │ S5 │   ┊ │ S7 │   ┊   MX                      │
+ │ └─W──┘  ┊ └─W──┘   ┊ └─W──┘   ┊ └─W──┘   ┊                           │
+ │  enc1   ┊   enc3   ┊   enc5   ┊   enc7   ┊        band C             │
+ └──────────────────────────────────────────────────────────────────────┘
+   ┊ = 30–35 µm gap carrying the odd channel's ADC wires straight down
+   ```
+
+
+The data from ADC will come from above and travel to its individual encoder and fifo, where even numbered channel will have shorter distance while the odd numbered channel needs to travel longer to reach the other end.
+
+And the reading logic, packet builder and event handler ans tuff will lie in the middle. 
+
+This is due to the narrow width we are constrained to because of pixel width.
+
+Another thing that I learnt that was handy was to create a relative floor plan when placing the IP blocks where we can set one block as a reference block, and the other one as target block.
+
+As for the edges, the tool by default count from 0 to max number clock-wise, and it start from left side.
+
+```
+                   1
+        ┌─────────────────────┐
+        |                     |
+        |                     |
+        |                     |
+        |                     |
+      0 |                     | 2
+        |                     |
+        |                     |
+        |                     |
+        |                     |
+        └─────────────────────┘
+                   3
+```
+
+So in this example, if we set the horizontal edge separate where we make both reference edge and object edge at 1, and offset as 0, they will be aligned by top edge.
+
+similarly, if we set the reference edge as 2, and object edge as 0, offset as 70, they will be separated by 70 um.
+
+And then when we simply move the reference object, the target object will move accordingly.
+
+![relative floorplan design technique](./img/relative_floorplan_design_for_the_IP_blocks_during_floorplan_designing.png)
+
+This could come in really handy. 
+
+But This layout design would bring extra long wires from ADC to the encoder for odd channels, I specifically left space between async fifos, so the wiring can cross the "channel", but still it felt not ideal.
+
+
+So I would probably wish to reorganise the design to keep some hierarchy like:
+
+```
+                data_block
+                    |
+                    |
+        -------------------------------------
+        |           |                       |
+duo_channel*4     local_event_handler    packet_builder/CARR_arbiter
+        |
+    --------------
+    |            |
+row_encoder*2   Async_fifo*2
+```
+
+
+instead of a flattened design, I could simply run the hierarchical implementation 4 times for duo_channel.
+
+And also I would like to merge packet builder and arbiter, not sure if that will help with the layout design.
+
+But the arrangement now is definitely a little too scattered.
+
+In the meantime, I will need to optimise and update the local register bank design.
+
+It has also been pointed out to me by claude that I do have an extra long combinational path between packet builder and Async fifo
+
+```
+Packet builder              CARR_arbiter                 Async fifo
+
+curr_state                   purely comb
+  |
+  └─> do_pop_slot --------> sel_idx_d/pop   ------------> read_prt_bin update
+```
+
+But when I do the timing check itself, I found that this paths does not exist in the top 10 worst slack, therefore I would like to go ahead and see how this reorganisation would work.
+
+I will just have to reorganise it first and then analyse the timing after synthesis.
+
+
+## 05 Nov 2026
+
+Before that I will develop the local register bank module, which should run at refclk, which should be 20 Mhz.
+
+
+
+
+
